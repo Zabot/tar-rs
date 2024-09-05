@@ -273,6 +273,12 @@ impl<'a, R: Read> Entry<'a, R> {
     pub fn set_preserve_mtime(&mut self, preserve: bool) {
         self.fields.preserve_mtime = preserve;
     }
+
+    /// Advance the file by the specified number of bytes. If the file is
+    /// not sparse this is equivalent to reading len bytes into an io::Sink
+    pub fn skip(&mut self, len: u64) -> io::Result<u64> {
+        self.fields.skip(len)
+    }
 }
 
 impl<'a, R: Read> Read for Entry<'a, R> {
@@ -947,6 +953,18 @@ impl<'a> EntryFields<'a> {
         }
         Ok(canon_target)
     }
+
+    fn skip(&mut self, len: u64) -> io::Result<u64> {
+        loop {
+            match self.data.get_mut(0).map(|io| io.skip(len)) {
+                Some(Ok(0)) => {
+                    self.data.remove(0);
+                }
+                Some(r) => return r,
+                None => return Ok(0),
+            }
+        }
+    }
 }
 
 impl<'a> Read for EntryFields<'a> {
@@ -968,6 +986,22 @@ impl<'a> Read for EntryIo<'a> {
         match *self {
             EntryIo::Pad(ref mut io) => io.read(into),
             EntryIo::Data(ref mut io) => io.read(into),
+        }
+    }
+}
+
+impl<'a> EntryIo<'a> {
+    fn skip(&mut self, len: u64) -> io::Result<u64> {
+        match *self {
+            EntryIo::Pad(ref mut io) => {
+                let to_skip = len.min(io.limit());
+                io.set_limit(io.limit() - to_skip);
+                Ok(to_skip)
+            }
+            EntryIo::Data(ref mut io) => {
+                let to_skip = len.min(io.limit());
+                std::io::copy(&mut io.by_ref().take(to_skip), &mut std::io::sink())
+            }
         }
     }
 }
